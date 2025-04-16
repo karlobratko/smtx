@@ -17,6 +17,7 @@
      #include "smtx.h"
 
    Options:
+     #define SMTX_STATIC                 - if static functions are preferred
      #define SMTX_NDEBUG                 - disable debug assertions and checks
      #define SMTX_ASSERT(expr)           - override default assert implementation (default: assert)
      #define SMTX_NEXT_SPINS(curr_spins) - override spin count progression strategy, initial curr_spins is always 1 (default: exponential backoff via curr_spins * 2)
@@ -34,8 +35,19 @@
 #ifndef SMTX_H
 #define SMTX_H
 
+#ifdef __STDC_NO_ATOMICS__
+#error "smtx library requires atomics support which is not provided on current machine, currently no fallback is provided."
+#endif
+
 #include <stdatomic.h>
 #include <time.h>
+
+#undef SMTX_DEF
+#ifdef SMTX_STATIC
+    #define SMTX_DEF static
+#else
+    #define SMTX_DEF extern
+#endif
 
 #ifndef SMTX_CACHE_LINE_SIZE
 #define SMTX_CACHE_LINE_SIZE 64
@@ -62,17 +74,17 @@ typedef struct {
 #endif
 
 
-extern int smtx_init(smtx_t *smtx);
+SMTX_DEF int smtx_init(smtx_t *smtx);
 
-extern int smtx_lock_shared      (smtx_t *smtx);
-extern int smtx_trylock_shared   (smtx_t *smtx);
-extern int smtx_timedlock_shared (smtx_t *smtx, const struct timespec *time_point);
-extern int smtx_unlock_shared    (smtx_t *smtx);
+SMTX_DEF int smtx_lock_shared     (smtx_t *smtx);
+SMTX_DEF int smtx_trylock_shared  (smtx_t *smtx);
+SMTX_DEF int smtx_timedlock_shared(smtx_t *smtx, const struct timespec *time_point);
+SMTX_DEF int smtx_unlock_shared   (smtx_t *smtx);
 
-extern int smtx_lock_exclusive      (smtx_t *smtx);
-extern int smtx_trylock_exclusive   (smtx_t *smtx);
-extern int smtx_timedlock_exclusive (smtx_t *smtx, const struct timespec *time_point);
-extern int smtx_unlock_exclusive    (smtx_t *smtx);
+SMTX_DEF int smtx_lock_exclusive     (smtx_t *smtx);
+SMTX_DEF int smtx_trylock_exclusive  (smtx_t *smtx);
+SMTX_DEF int smtx_timedlock_exclusive(smtx_t *smtx, const struct timespec *time_point);
+SMTX_DEF int smtx_unlock_exclusive   (smtx_t *smtx);
 
 #endif //SMTX_H
 
@@ -80,6 +92,16 @@ extern int smtx_unlock_exclusive    (smtx_t *smtx);
 
 #include <stdbool.h>
 #include <stdint.h>
+
+#undef SMTX_UTIL
+#define SMTX_UTIL static inline
+
+#undef SMTX_IMPL
+#ifdef SMTX_STATIC
+#define SMTX_IMPL static inline
+#else
+#define SMTX_IMPL extern inline
+#endif
 
 typedef uint64_t smtx_ns_t;
 
@@ -137,24 +159,24 @@ typedef uint64_t smtx_ns_t;
 #undef SMTX_NS_PER_S
 #define SMTX_NS_PER_S 1000000000LL
 
-static inline smtx_ns_t ns_from_timespec(const struct timespec *ts) {
-    return ((smtx_ns_t)ts->tv_sec * SMTX_NS_PER_S) + ts->tv_nsec;
+SMTX_UTIL smtx_ns_t ns_from_timespec(const struct timespec *ts) {
+    return (smtx_ns_t)ts->tv_sec * SMTX_NS_PER_S + ts->tv_nsec;
 }
 
-static inline smtx_ns_t ns_since_epoch() {
+SMTX_UTIL smtx_ns_t ns_since_epoch() {
     struct timespec ts;
     SMTX_ASSERT(clock_gettime(SMTX_CLOCK_ID, &ts) == 0);
     return ns_from_timespec(&ts);
 }
 
-static inline void spin_with_yield(uint spins) {
+SMTX_UTIL void spin_with_yield(uint spins) {
     SPIN(spins);
     if (spins > SMTX_YIELD_THRESHOLD) {
         SMTX_YIELD;
     }
 }
 
-extern inline int smtx_init(smtx_t *smtx) {
+SMTX_IMPL int smtx_init(smtx_t *smtx) {
     if (smtx == NULL) {
         return thrd_error;
     }
@@ -165,7 +187,7 @@ extern inline int smtx_init(smtx_t *smtx) {
     return thrd_success;
 }
 
-extern inline int smtx_lock_shared(smtx_t *smtx) {
+SMTX_IMPL int smtx_lock_shared(smtx_t *smtx) {
     if (smtx == NULL) {
         return thrd_error;
     }
@@ -185,11 +207,11 @@ extern inline int smtx_lock_shared(smtx_t *smtx) {
             return thrd_success;
         }
 
-        atomic_fetch_sub_explicit(&smtx->reader_count, 1, memory_order_relaxed);
+        atomic_fetch_sub_explicit(&smtx->reader_count, 1, memory_order_release);
     }
 }
 
-extern inline int smtx_trylock_shared(smtx_t *smtx) {
+SMTX_IMPL int smtx_trylock_shared(smtx_t *smtx) {
     if (smtx == NULL) {
         return thrd_error;
     }
@@ -201,14 +223,14 @@ extern inline int smtx_trylock_shared(smtx_t *smtx) {
     atomic_fetch_add_explicit(&smtx->reader_count, 1, memory_order_relaxed);
 
     if (atomic_load_explicit(&smtx->writer_locked, memory_order_acquire)) {
-        atomic_fetch_sub_explicit(&smtx->reader_count, 1, memory_order_relaxed);
+        atomic_fetch_sub_explicit(&smtx->reader_count, 1, memory_order_release);
         return thrd_busy;
     }
 
     return thrd_success;
 }
 
-extern inline int smtx_timedlock_shared(smtx_t *smtx, const struct timespec *time_point) {
+SMTX_IMPL int smtx_timedlock_shared(smtx_t *smtx, const struct timespec *time_point) {
     if (smtx == NULL || time_point == NULL) {
         return thrd_error;
     }
@@ -230,7 +252,7 @@ extern inline int smtx_timedlock_shared(smtx_t *smtx, const struct timespec *tim
             return thrd_success;
         }
 
-        atomic_fetch_sub_explicit(&smtx->reader_count, 1, memory_order_relaxed);
+        atomic_fetch_sub_explicit(&smtx->reader_count, 1, memory_order_release);
 
         spin_with_yield(spins);
         if (spins < SMTX_MAX_WRITER_WAIT_SPINS) {
@@ -241,7 +263,7 @@ extern inline int smtx_timedlock_shared(smtx_t *smtx, const struct timespec *tim
     return thrd_timedout;
 }
 
-extern inline int smtx_unlock_shared(smtx_t *smtx) {
+SMTX_IMPL int smtx_unlock_shared(smtx_t *smtx) {
     if (smtx == NULL) {
         return thrd_error;
     }
@@ -250,12 +272,12 @@ extern inline int smtx_unlock_shared(smtx_t *smtx) {
     SMTX_ASSERT(atomic_load_explicit(&smtx->reader_count, memory_order_relaxed) > 0);
 #endif
 
-    atomic_fetch_sub_explicit(&smtx->reader_count, 1, memory_order_relaxed);
+    atomic_fetch_sub_explicit(&smtx->reader_count, 1, memory_order_release);
 
     return thrd_success;
 }
 
-extern inline int smtx_lock_exclusive(smtx_t *smtx) {
+SMTX_IMPL int smtx_lock_exclusive(smtx_t *smtx) {
     if (smtx == NULL) {
         return thrd_error;
     }
@@ -276,7 +298,7 @@ extern inline int smtx_lock_exclusive(smtx_t *smtx) {
     return thrd_success;
 }
 
-extern inline int smtx_trylock_exclusive(smtx_t *smtx) {
+SMTX_IMPL int smtx_trylock_exclusive(smtx_t *smtx) {
     if (smtx == NULL) {
         return thrd_error;
     }
@@ -294,7 +316,7 @@ extern inline int smtx_trylock_exclusive(smtx_t *smtx) {
     return thrd_success;
 }
 
-extern inline int smtx_timedlock_exclusive(smtx_t *smtx, const struct timespec *time_point) {
+SMTX_IMPL int smtx_timedlock_exclusive(smtx_t *smtx, const struct timespec *time_point) {
     if (smtx == NULL || time_point == NULL) {
         return thrd_error;
     }
@@ -328,7 +350,7 @@ extern inline int smtx_timedlock_exclusive(smtx_t *smtx, const struct timespec *
     return thrd_success;
 }
 
-extern inline int smtx_unlock_exclusive(smtx_t *smtx) {
+SMTX_IMPL int smtx_unlock_exclusive(smtx_t *smtx) {
     if (smtx == NULL) {
         return thrd_error;
     }
