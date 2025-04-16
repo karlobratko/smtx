@@ -73,7 +73,6 @@ typedef struct {
 } smtx_t;
 #endif
 
-
 SMTX_DEF int smtx_init(smtx_t *smtx);
 
 SMTX_DEF int smtx_lock_shared     (smtx_t *smtx);
@@ -148,6 +147,10 @@ typedef uint64_t smtx_ns_t;
             _mm_pause();                    \
         }                                   \
     } while (0)
+// TODO: Check on ARM hardware if following works properly.
+// #elif defined(__aarch64__) || defined(__arm__)
+// #define SPIN __asm__ __volatile__("yield")
+// #else
 #else
 #define SPIN(delay)                                  \
     do {                                             \
